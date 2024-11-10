@@ -4,18 +4,14 @@
 
 * `-u, --username`: 账号
 * `-p, --password`: 密码
+* `-l, --login-id`: 登录id
+* `-C, --credential-file`: 账户凭据存储文件, 默认`refresh_tokens.json`
 * `-a, --app-id`: 仅爬取指定`appid`
-* `-l, --list-apps`: 是否仅打印app信息
-* `-s, --sentry-path, --ssfn`: `ssfn`文件路径
-* `-k, --login-key`: 登录密钥
-* `-f, --two-factor-code`: `2fa`验证码
-* `-A, --auth-code`: 邮箱验证码
-* `-i, --login-id`: 登录id
-* `-c, --cli`: 交互式登录
-* `-L, --level`: 日志,默认`INFO`
-* `-C, --credential-location`: 账户凭据存储路径,默认`client`
+* `-i, --only-info`: 是否仅打印app信息
+* `-s, --shared-install`: 是否一并爬取运行库
 * `-r, --remove-old`: 爬取到新的清单后是否删除旧的
-* `-n, --retry`: cm重连次数
+* `-o, --save-path`: 保存清单文件的路径
+* `-L, --level`: 日志, 默认`INFO`
 
 ## 清单文件简介
 

@@ -1,1 +1,1 @@
-steam[client]
+steam[client] @ git+https://github.com/solsticegamestudios/steam@2739270600fbc45242d3c1ba8de5e1a8cf0251c1

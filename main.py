@@ -1,105 +1,44 @@
+import os
+import sys
 import vdf
-import gevent
+import json
 import struct
-import os.path
 import logging
 import argparse
-import traceback
 from pathlib import Path
 from binascii import crc32
-from steam.core.cm import CMClient
+from steam.webauth import WebAuth
 from steam.client import SteamClient
-from six import itervalues, iteritems
-from steam.client.cdn import CDNClient
-from steam.enums import EResult, EType
-from steam.exceptions import SteamError
+from steam.client.cdn import CDNClient, CDNDepotManifest
+from steam.enums import EResult, EBillingType
 from steam.protobufs.content_manifest_pb2 import ContentManifestSignature
 
-parser = argparse.ArgumentParser()
-parser.add_argument('-u', '--username', required=True)
-parser.add_argument('-p', '--password', required=False, default='')
-parser.add_argument('-a', '--app-id', required=False)
-parser.add_argument('-l', '--list-apps', action='store_true', required=False)
-parser.add_argument('-s', '--sentry-path', '--ssfn', required=False)
-parser.add_argument('-k', '--login-key', required=False)
-parser.add_argument('-f', '--two-factor-code', required=False)
-parser.add_argument('-A', '--auth-code', required=False)
-parser.add_argument('-i', '--login-id', required=False)
-parser.add_argument('-c', '--cli', action='store_true', required=False)
-parser.add_argument('-L', '--level', required=False, default='INFO')
-parser.add_argument('-C', '--credential-location', required=False)
-parser.add_argument('-r', '--remove-old', action='store_true', required=False)
-parser.add_argument('-n', '--retry', type=int, required=False, default=1)
+def get_exe_dir():
+    # https://pyinstaller.org/en/stable/runtime-information.html
+    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+        return os.path.dirname(sys.executable)
+    else:
+        return os.path.dirname(os.path.abspath(__file__))
 
-
-class BillingType:
-    NoCost = 0
-    BillOnceOnly = 1
-    BillMonthly = 2
-    ProofOfPrepurchaseOnly = 3
-    GuestPass = 4
-    HardwarePromo = 5
-    Gift = 6
-    AutoGrant = 7
-    OEMTicket = 8
-    RecurringOption = 9
-    BillOnceOrCDKey = 10
-    Repurchaseable = 11
-    FreeOnDemand = 12
-    Rental = 13
-    CommercialLicense = 14
-    FreeCommercialLicense = 15
-    NumBillingTypes = 16
-    PaidList = [BillOnceOnly, BillMonthly, BillOnceOrCDKey, Repurchaseable, Rental, ProofOfPrepurchaseOnly, Gift]
-
-
-class Result(dict):
-    def __init__(self, result=False, code=EResult.Fail, *args, **kwargs):
-        super().__init__()
-        self.result = result
-        self.args = args
-        self.code = code
-        self.update(kwargs)
-
-    def __bool__(self):
-        return bool(self.result)
-
-
-def get_manifest(cdn, app_id, depot_id, manifest_gid, remove_old=False, save_path=None, retry_num=10):
+def dmg_save_manifest(manifest: CDNDepotManifest, depot_key: bytes,
+                      remove_old=False, save_path=None):
+    app_id = int(manifest.app_id)
+    depot_id = str(manifest.depot_id)
+    manifest_gid = str(manifest.gid)
     if not save_path:
         save_path = Path().absolute()
     app_path = save_path / f'depots/{app_id}'
     manifest_path = app_path / f'{depot_id}_{manifest_gid}.manifest'
     if manifest_path.exists():
-        return Result(result=True, code=EResult.OK, app_id=app_id, depot_id=depot_id, manifest_gid=manifest_gid)
-    while True:
-        try:
-            manifest_code = cdn.get_manifest_request_code(app_id, depot_id, manifest_gid)
-            manifest = cdn.get_manifest(app_id, depot_id, manifest_gid, decrypt=False,
-                                        manifest_request_code=manifest_code)
-            depot_key = cdn.get_depot_key(manifest.app_id, manifest.depot_id)
-            break
-        except KeyboardInterrupt:
-            exit(-1)
-        except SteamError as e:
-            if retry_num == 0:
-                return Result(result=False, code=e.eresult, app_id=app_id, depot_id=depot_id, manifest_gid=manifest_gid)
-            retry_num -= 1
-            log.warning(f'{e.message} result: {str(e.eresult)}')
-            if e.eresult == EResult.AccessDenied:
-                return Result(result=False, code=e.eresult, app_id=app_id, depot_id=depot_id, manifest_gid=manifest_gid)
-            gevent.idle()
-        except:
-            log.error(traceback.format_exc())
-            return Result(result=False, code=EResult.Fail, app_id=app_id, depot_id=depot_id, manifest_gid=manifest_gid)
-    log.info(
-        f'{"":<10}app_id: {app_id:<8}{"":<10}depot_id: {depot_id:<8}{"":<10}manifest_gid: {manifest_gid:20}{"":<10}DecryptionKey: {depot_key.hex()}')
+        return True, manifest_path, []
+    log.info("app_id: %s | depot_id: %s | manifest_gid: %s | DecryptionKey: %s",
+             app_id, depot_id, manifest_gid, depot_key.hex())
     manifest.decrypt_filenames(depot_key)
     manifest.signature = ContentManifestSignature()
     for mapping in manifest.payload.mappings:
         mapping.filename = mapping.filename.rstrip('\x00 \n\t')
         mapping.chunks.sort(key=lambda x: x.sha)
-    manifest.payload.mappings.sort(key=lambda x: x.filename.lower())
+    manifest.payload.mappings.sort(key=lambda x: x.filename.upper())
     if not os.path.exists(app_path):
         os.makedirs(app_path)
     if os.path.isfile(app_path / 'config.vdf'):
@@ -123,165 +62,149 @@ def get_manifest(cdn, app_id, depot_id, manifest_gid, remove_old=False, save_pat
         f.write(manifest.serialize(compress=False))
     with open(app_path / 'config.vdf', 'w') as f:
         vdf.dump(d, f, pretty=True)
-    return Result(result=True, code=EResult.OK, app_id=app_id, depot_id=depot_id, manifest_gid=manifest_gid,
-                  delete_list=delete_list)
+    return True, manifest_path, delete_list
+
+def dmg_filter_func(depot_id: int, depot_info: dict):
+    if depot_info.get('sharedinstall') == '1' and not args.shared_install:
+        return False # skip sharedinstalls
+    return True
 
 
-class MySteamClient(SteamClient):
-    credential_location = str(Path('client').absolute())
-    _LOG = logging.getLogger('MySteamClient')
-    sentry_path = None
-    login_key_path = None
+parser = argparse.ArgumentParser()
+parser.add_argument(
+    '-u', '--username', required=False, default='',
+    help='optional when credential present')
+parser.add_argument(
+    '-p', '--password', required=False, default='',
+    help='optional when credential present')
+parser.add_argument(
+    '-l', '--login-id', required=False, default=None)
 
-    def __init__(self, credential_location=None, sentry_path=None, retry=1):
-        self.retry = retry
-        if credential_location:
-            self.credential_location = credential_location
-        if not Path(self.credential_location).exists():
-            Path(self.credential_location).mkdir(parents=True, exist_ok=True)
-        if sentry_path:
-            if Path(sentry_path).exists():
-                self.sentry_path = sentry_path
-            elif (Path('client') / sentry_path).exists():
-                self.sentry_path = str(Path('client') / sentry_path)
-        SteamClient.__init__(self)
+parser.add_argument(
+    '-C', '--credential-file', required=False,
+    default=os.path.join(get_exe_dir(), 'refresh_tokens.json'),
+    help='file for read/write the credential tokens')
+parser.add_argument(
+    '-a', '--app-id', required=False,
+    help='only download manifest owned by selected appids e.g. 480,730')
+parser.add_argument(
+    '-i', '--only-info', action='store_true', required=False,
+    help='only list appid info owned by logged-on user and exit')
+parser.add_argument(
+    '-s', '--shared-install', action='store_true', required=False,
+    help='download sharedinstall manifest, default not')
+parser.add_argument(
+    '-r', '--remove-old', action='store_true', required=False,
+    help='remove old manifest on update')
+parser.add_argument(
+    '-o', '--save-path', required=False,
+    help='where to save the manifest')
 
-    def _handle_update_machine_auth(self, message):
-        SteamClient._handle_update_machine_auth(self, message)
+levellist = ''
+for l in logging.getLevelNamesMapping(): 
+    levellist += f'{l} '
+parser.add_argument(
+    '-L', '--logging-level', required=False, default='INFO',
+    help=levellist)
+args = parser.parse_args()
 
-    def _handle_login_key(self, message):
-        SteamClient._handle_login_key(self, message)
-        with (Path(self.credential_location) / f'{self.username}.key').open('w') as f:
-            f.write(self.login_key)
+log = logging.getLogger(__name__)
+logging.basicConfig(level=args.logging_level,
+    format='%(asctime)s - %(levelname)s | %(message)s')
 
-    def _handle_logon(self, msg):
-        SteamClient._handle_logon(self, msg)
+USERNAME, PASSWORD = args.username, args.password
 
-    def _get_sentry_path(self, username):
-        if self.sentry_path:
-            return self.sentry_path
-        else:
-            return SteamClient._get_sentry_path(self, username)
+# load credentials
+refresh_tokens = {}
+if os.path.isfile(args.credential_file):
+    with open(args.credential_file) as f:
+        try:
+            lf = json.load(f)
+            if isinstance(lf, dict):
+                refresh_tokens = lf
+        except:
+            pass
 
-    def relogin(self):
-        result = SteamClient.relogin(self)
-        if result == EResult.InvalidPassword and self.login_key_path:
-            self.login_key_path.unlink(missing_ok=True)
-        return result
+# select username from credentials if not already persent
+if not USERNAME:
+    users = {i: user for i, user in enumerate(refresh_tokens, 1)}
+    if len(users) != 0:
+        for i, user in users.items():
+            print(f"{i}: {user}")
+        while True:
+            try:
+                num=int(input("Choose an account to login (0 for add account): "))
+            except ValueError:
+                print('Please type a number'); continue
+            break
+        USERNAME = users.get(num)
 
-    def __setattr__(self, key, value):
-        SteamClient.__setattr__(self, key, value)
-        if key == 'username':
-            if not self.login_key_path:
-                self.login_key_path = Path(self.credential_location) / f'{self.username}.key'
-                if not self.login_key and self.login_key_path.exists():
-                    with self.login_key_path.open() as f:
-                        self.login_key = f.read()
+# still no username? ask user
+if not USERNAME:
+    USERNAME = input("Steam user: ")
 
-    def connect(self, *args, **kwargs):
-        """Attempt to establish connection, see :meth:`.CMClient.connect`"""
-        self._bootstrap_cm_list_from_file()
-        kwargs['retry'] = self.retry
-        return CMClient.connect(self, *args, **kwargs)
+REFRESH_TOKEN = refresh_tokens.get(USERNAME)
 
+if not REFRESH_TOKEN:
+    auth = WebAuth()
+    try:
+        auth.cli_login(USERNAME, PASSWORD)
+        REFRESH_TOKEN = auth.refresh_token
+        with open(args.credential_file, 'w') as f:
+            refresh_tokens.update({USERNAME: REFRESH_TOKEN})
+            json.dump(refresh_tokens, f, indent=4)
+    except Exception as e:
+        log.error(f'Unknown exception: {e}')
+        exit(1)
 
-class MyCDNClient(CDNClient):
-    _LOG = logging.getLogger('MyCDNClient')
-    packages_info = None
+client = SteamClient()
+result = client.login(USERNAME, PASSWORD, REFRESH_TOKEN, args.login_id)
+if result != EResult.OK:
+    log.error(f'Login failure reason: {result.__repr__()}')
+    exit(result)
 
-    def load_licenses(self):
-        """Read licenses from SteamClient instance, required for determining accessible content"""
-        self.licensed_app_ids.clear()
-        self.licensed_depot_ids.clear()
+if not client.licenses:
+    log.error("No steam licenses found on SteamClient instance")
+    exit(1)
 
-        if self.steam.steam_id.type == EType.AnonUser:
-            packages = [17906]
-        else:
-            if not self.steam.licenses:
-                self._LOG.debug("No steam licenses found on SteamClient instance")
-                return
+app_id_list = []
+if args.app_id:
+    app_id_list = {int(app_id) for app_id in args.app_id.split(',')}
+else:
+    # only query paid appid
+    paidtype_list = [
+        EBillingType.BillOnceOnly,
+        EBillingType.BillMonthly,
+        EBillingType.BillOnceOrCDKey,
+        EBillingType.Repurchaseable,
+        EBillingType.Rental,
+        EBillingType.ProofOfPrepurchaseOnly,
+        EBillingType.Gift]
+    packages = list(map(lambda l: {'packageid': l.package_id, 'access_token': l.access_token},
+                        client.licenses.values()))
+    for package_id, info in client.get_product_info(packages=packages)['packages'].items():
+        if 'appids' in info and 'depotids' in info and info['billingtype'] in paidtype_list:
+            app_id_list.extend(list(info['appids'].values()))
 
-            packages = list(map(lambda l: {'packageid': l.package_id, 'access_token': l.access_token},
-                                itervalues(self.steam.licenses)))
+if len(app_id_list) == 0:
+    log.error('No app found')
+    exit(1)
 
-        self.packages_info = self.steam.get_product_info(packages=packages)['packages']
-
-        for package_id, info in iteritems(self.packages_info):
-            self.licensed_app_ids.update(info['appids'].values())
-            self.licensed_depot_ids.update(info['depotids'].values())
-
-
-log = logging.getLogger('DepotManifestGen')
-
-
-def main(args=None):
-    if args:
-        args = parser.parse_args(args)
-    else:
-        args = parser.parse_args()
-    if args.level:
-        level = logging.getLevelName(args.level.upper())
-    else:
-        level = logging.INFO
-    logging.basicConfig(format='%(asctime)s - %(pathname)s[line:%(lineno)d] - %(levelname)s: %(message)s', level=level)
-    steam = MySteamClient(args.credential_location, args.sentry_path, args.retry)
-    steam.username = args.username
-    if args.login_key:
-        steam.login_key = args.login_key
-    result = steam.relogin()
-    if result != EResult.OK:
-        if args.cli:
-            result = steam.cli_login(args.username, args.password)
-        else:
-            result = steam.login(args.username, args.password, args.login_key, args.auth_code, args.two_factor_code,
-                                 int(args.login_id) if args.login_id else None)
-    if result != EResult.OK:
-        log.error(f'Login failure reason: {result.__repr__()}')
-        exit(result)
-    app_id_list = []
-    app_id_list_all = set()
-    depot_id_list = []
-    packages_info = []
-    cdn = MyCDNClient(steam)
-    if cdn.packages_info:
-        for package_id, info in steam.get_product_info(packages=cdn.packages_info)['packages'].items():
-            if 'appids' in info and 'depotids' in info and info['billingtype'] in BillingType.PaidList:
-                app_id_list_all.update(list(info['appids'].values()))
-                app_id_list.extend(list(info['appids'].values()))
-                depot_id_list.extend(list(info['depotids'].values()))
-                packages_info.append((list(info['appids'].values()), list(info['depotids'].values())))
-    if args.app_id:
-        app_id_list = {int(app_id) for app_id in args.app_id.split(',')}
-        app_id_list_all.update(app_id_list)
-    fresh_resp = steam.get_product_info(app_id_list)
-    app_types = ['game', 'dlc', 'application', 'music']
-    if args.list_apps:
-        for app_id in app_id_list_all:
-            app = fresh_resp['apps'][app_id]
-            if 'common' in app and app['common']['type'].lower() in app_types:
-                log.info("%s | %s | %s", app_id, app['common']['type'].upper(), app['common']['name'])
-        exit()
-    result_list = []
+if args.only_info:
+    fresh_resp = client.get_product_info(app_id_list)
     for app_id in app_id_list:
         app = fresh_resp['apps'][app_id]
-        if 'common' in app and app['common']['type'].lower() in app_types:
-            if 'depots' not in fresh_resp['apps'][app_id]:
-                continue
-            for depot_id, depot in fresh_resp['apps'][app_id]['depots'].items():
-                if 'manifests' in depot and 'public' in depot['manifests'] and int(
-                        depot_id) in {*cdn.licensed_depot_ids, *cdn.licensed_app_ids}:
-                    manifest_gid = depot['manifests']['public']
-                    if isinstance(manifest_gid, dict):
-                        manifest_gid = manifest_gid.get('gid')
-                    if not isinstance(manifest_gid, str):
-                        continue
-                    result_list.append(gevent.spawn(get_manifest, cdn, app_id, depot_id, manifest_gid, args.remove_old))
-                    gevent.idle()
-    try:
-        gevent.joinall(result_list)
-    except KeyboardInterrupt:
-        exit(-1)
+        log.info("%s | %s | %s", app_id, app['common']['type'].upper(), app['common']['name'])
+        exit()
 
+cdn = CDNClient(client)
+for app_id in app_id_list:
+    if not int(app_id) in {*cdn.licensed_depot_ids, *cdn.licensed_app_ids}:
+        log.warning(f"account '{USERNAME}' not owned '{app_id}', ignored")
+        continue
+    for manifest in cdn.get_manifests(app_id, filter_func=dmg_filter_func):
+        depot_key = cdn.get_depot_key(manifest.app_id, manifest.depot_id)
+        dmg_save_manifest(manifest, depot_key, args.remove_old, args.save_path)
 
-if __name__ == '__main__':
-    main()
+client.logout()
+log.info('done!')
