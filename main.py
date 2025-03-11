@@ -193,13 +193,13 @@ result = client.login(USERNAME, PASSWORD, REFRESH_TOKEN, args.login_id)
 while result != EResult.OK and retry != 0:
     log.error(f'Login failure: {result.__repr__()}')
 
-    if (result == EResult.AccessDenied or EResult.InvalidPassword) and token_present:
+    if result == EResult.TryAnotherCM:
+        pass
+    elif (result == EResult.AccessDenied or EResult.InvalidPassword) and token_present:
         log.info(f'Maybe Refresh Token expired, re-generate it...')
         if not PASSWORD:
             PASSWORD = getpass("Password: ")
         REFRESH_TOKEN = get_token(USERNAME, PASSWORD)
-    elif result == EResult.TryAnotherCM:
-        pass
     else:
         exit(result)
 
