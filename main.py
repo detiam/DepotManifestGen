@@ -182,6 +182,7 @@ def get_token(username='', password=''):
 
 REFRESH_TOKEN = refresh_tokens.get(USERNAME)
 
+token_present = False
 if REFRESH_TOKEN:
     token_present = True
 else:
