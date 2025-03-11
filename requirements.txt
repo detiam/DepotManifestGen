@@ -1,1 +1,1 @@
-steam[client] @ git+https://github.com/solsticegamestudios/steam@2739270600fbc45242d3c1ba8de5e1a8cf0251c1
+steam[client] @ git+https://github.com/detiam/steam_websocket.git@3bb2a4496bdf78317519e9c4d275024e73db09f9

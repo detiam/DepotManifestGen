@@ -7,11 +7,6 @@ import logging
 import argparse
 from pathlib import Path
 from binascii import crc32
-from steam.webauth import WebAuth
-from steam.client import SteamClient
-from steam.client.cdn import CDNClient, CDNDepotManifest
-from steam.enums import EResult, EBillingType
-from steam.protobufs.content_manifest_pb2 import ContentManifestSignature
 
 def get_exe_dir():
     # https://pyinstaller.org/en/stable/runtime-information.html
@@ -19,6 +14,70 @@ def get_exe_dir():
         return os.path.dirname(sys.executable)
     else:
         return os.path.dirname(os.path.abspath(__file__))
+
+from steam.utils.web import APIHost, DEFAULT_PARAMS
+
+parser = argparse.ArgumentParser()
+parser.add_argument(
+    '-u', '--username', required=False, default='',
+    help='optional when credential present')
+parser.add_argument(
+    '-p', '--password', required=False, default='',
+    help='optional when credential present')
+parser.add_argument(
+    '-l', '--login-id', required=False, default=None)
+
+parser.add_argument(
+    '-C', '--credential-file', required=False,
+    default=os.path.join(get_exe_dir(), 'refresh_tokens.json'),
+    help='file for read/write the credential tokens')
+parser.add_argument(
+    '-a', '--app-id', required=False,
+    help='only download manifest owned by selected appids e.g. 480,730')
+parser.add_argument(
+    '-i', '--only-info', action='store_true', required=False,
+    help='only list appid info owned by logged-on user and exit')
+parser.add_argument(
+    '-s', '--shared-install', action='store_true', required=False,
+    help='download sharedinstall manifest, default not')
+parser.add_argument(
+    '-r', '--remove-old', action='store_true', required=False,
+    help='remove old manifest on update')
+parser.add_argument(
+    '-o', '--save-path', required=False,
+    help='where to save the manifest')
+parser.add_argument(
+    '-A', '--api-host', default='Public',
+    help=f'available: {APIHost._member_names_} or a custom string')
+
+levellist = ''
+for l in logging.getLevelNamesMapping(): 
+    levellist += f'{l} '
+parser.add_argument(
+    '-L', '--logging-level', required=False, default='INFO',
+    help=levellist)
+parser.add_argument(
+    '--use-http', action='store_true')
+parser.add_argument(
+    '--use-websocket', action='store_true')
+args = parser.parse_args()
+
+log = logging.getLogger(__name__)
+logging.basicConfig(level=args.logging_level,
+    format='%(asctime)s - %(levelname)s | %(message)s')
+
+DEFAULT_PARAMS['https'] = not args.use_http
+try:
+    DEFAULT_PARAMS['apihost'] = APIHost[args.api_host].value
+except:
+    DEFAULT_PARAMS['apihost'] = args.api_host
+
+from steam.webauth import WebAuth
+from steam.client import SteamClient
+from steam.core.connection import WebsocketConnection
+from steam.client.cdn import CDNClient, CDNDepotManifest
+from steam.enums import EResult, EBillingType
+from steam.protobufs.content_manifest_pb2 import ContentManifestSignature
 
 def dmg_save_manifest(manifest: CDNDepotManifest, depot_key: bytes,
                       remove_old=False, save_path=None):
@@ -70,48 +129,6 @@ def dmg_filter_func(depot_id: int, depot_info: dict):
     return True
 
 
-parser = argparse.ArgumentParser()
-parser.add_argument(
-    '-u', '--username', required=False, default='',
-    help='optional when credential present')
-parser.add_argument(
-    '-p', '--password', required=False, default='',
-    help='optional when credential present')
-parser.add_argument(
-    '-l', '--login-id', required=False, default=None)
-
-parser.add_argument(
-    '-C', '--credential-file', required=False,
-    default=os.path.join(get_exe_dir(), 'refresh_tokens.json'),
-    help='file for read/write the credential tokens')
-parser.add_argument(
-    '-a', '--app-id', required=False,
-    help='only download manifest owned by selected appids e.g. 480,730')
-parser.add_argument(
-    '-i', '--only-info', action='store_true', required=False,
-    help='only list appid info owned by logged-on user and exit')
-parser.add_argument(
-    '-s', '--shared-install', action='store_true', required=False,
-    help='download sharedinstall manifest, default not')
-parser.add_argument(
-    '-r', '--remove-old', action='store_true', required=False,
-    help='remove old manifest on update')
-parser.add_argument(
-    '-o', '--save-path', required=False,
-    help='where to save the manifest')
-
-levellist = ''
-for l in logging.getLevelNamesMapping(): 
-    levellist += f'{l} '
-parser.add_argument(
-    '-L', '--logging-level', required=False, default='INFO',
-    help=levellist)
-args = parser.parse_args()
-
-log = logging.getLogger(__name__)
-logging.basicConfig(level=args.logging_level,
-    format='%(asctime)s - %(levelname)s | %(message)s')
-
 USERNAME, PASSWORD = args.username, args.password
 
 # load credentials
@@ -158,6 +175,12 @@ if not REFRESH_TOKEN:
         exit(1)
 
 client = SteamClient()
+# China apihost only support websocket
+if DEFAULT_PARAMS['apihost'] == APIHost.China.value:
+    args.use_websocket = True
+if args.use_websocket:
+    client.connection = WebsocketConnection()
+
 result = client.login(USERNAME, PASSWORD, REFRESH_TOKEN, args.login_id)
 if result != EResult.OK:
     log.error(f'Login failure reason: {result.__repr__()}')
