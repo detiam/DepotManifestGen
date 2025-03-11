@@ -36,6 +36,9 @@ parser.add_argument(
     '-a', '--app-id', required=False,
     help='only download manifest owned by selected appids e.g. 480,730')
 parser.add_argument(
+    '-w', '--workshop-id', required=False,
+    help='only download workshop item\'s manifest owned by selected workshop ids e.g. 3439745927,3440777586')
+parser.add_argument(
     '-i', '--only-info', action='store_true', required=False,
     help='only list appid info owned by logged-on user and exit')
 parser.add_argument(
@@ -210,6 +213,22 @@ if not client.licenses:
     log.error("No steam licenses found on SteamClient instance")
     exit(1)
 
+cdn = CDNClient(client)
+args.save_path = Path(args.save_path) if args.save_path else args.save_path
+
+if args.workshop_id:
+    workshop_id_list = {int(workshop_id) for workshop_id in args.workshop_id.split(',')}
+
+    for workshop_id in workshop_id_list:
+        log.info(f'Downloading workshop item {workshop_id}')
+        manifest = cdn.get_manifest_for_workshop_item(workshop_id)
+        depot_key = cdn.get_depot_key(manifest.app_id, manifest.depot_id)
+        dmg_save_manifest(
+            manifest, depot_key, args.remove_old,
+            args.save_path or Path().absolute() / 'workshop' / str(workshop_id))
+
+    exit(0)
+
 app_id_list = []
 if args.app_id:
     app_id_list = {int(app_id) for app_id in args.app_id.split(',')}
@@ -240,7 +259,6 @@ if args.only_info:
         log.info("%s | %s | %s", app_id, app['common']['type'].upper(), app['common']['name'])
         exit()
 
-cdn = CDNClient(client)
 for app_id in app_id_list:
     if not int(app_id) in {*cdn.licensed_depot_ids, *cdn.licensed_app_ids}:
         log.warning(f"account '{USERNAME}' not owned '{app_id}', ignored")
