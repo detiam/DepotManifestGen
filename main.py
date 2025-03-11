@@ -7,6 +7,7 @@ import logging
 import argparse
 from pathlib import Path
 from binascii import crc32
+from getpass import getpass
 
 def get_exe_dir():
     # https://pyinstaller.org/en/stable/runtime-information.html
@@ -160,20 +161,6 @@ if not USERNAME:
 if not USERNAME:
     USERNAME = input("Steam user: ")
 
-REFRESH_TOKEN = refresh_tokens.get(USERNAME)
-
-if not REFRESH_TOKEN:
-    auth = WebAuth()
-    try:
-        auth.cli_login(USERNAME, PASSWORD)
-        REFRESH_TOKEN = auth.refresh_token
-        with open(args.credential_file, 'w') as f:
-            refresh_tokens.update({USERNAME: REFRESH_TOKEN})
-            json.dump(refresh_tokens, f, indent=4)
-    except Exception as e:
-        log.error(f'Unknown exception: {e}')
-        exit(1)
-
 client = SteamClient()
 # China apihost only support websocket
 if DEFAULT_PARAMS['apihost'] == APIHost.China.value:
@@ -181,10 +168,42 @@ if DEFAULT_PARAMS['apihost'] == APIHost.China.value:
 if args.use_websocket:
     client.connection = WebsocketConnection()
 
+def get_token(username='', password=''):
+    auth = WebAuth()
+    try:
+        auth.cli_login(username, password)
+        with open(args.credential_file, 'w') as f:
+            refresh_tokens.update({username: auth.refresh_token})
+            json.dump(refresh_tokens, f, indent=4)
+        return auth.refresh_token
+    except Exception as e:
+        log.error(f'Unknown exception: {e}')
+        raise e
+
+REFRESH_TOKEN = refresh_tokens.get(USERNAME)
+
+if REFRESH_TOKEN:
+    token_present = True
+else:
+    REFRESH_TOKEN = get_token(USERNAME, PASSWORD)
+
+retry = 3
 result = client.login(USERNAME, PASSWORD, REFRESH_TOKEN, args.login_id)
-if result != EResult.OK:
-    log.error(f'Login failure reason: {result.__repr__()}')
-    exit(result)
+while result != EResult.OK and retry != 0:
+    log.error(f'Login failure: {result.__repr__()}')
+
+    if (result == EResult.AccessDenied or EResult.InvalidPassword) and token_present:
+        log.info(f'Maybe Refresh Token expired, re-generate it...')
+        if not PASSWORD:
+            PASSWORD = getpass("Password: ")
+        REFRESH_TOKEN = get_token(USERNAME, PASSWORD)
+    elif result == EResult.TryAnotherCM:
+        pass
+    else:
+        exit(result)
+
+    retry -= 1
+    result = client.login(USERNAME, PASSWORD, REFRESH_TOKEN, args.login_id)
 
 if not client.licenses:
     log.error("No steam licenses found on SteamClient instance")
