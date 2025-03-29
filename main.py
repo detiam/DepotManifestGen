@@ -5,6 +5,7 @@ import json
 import struct
 import logging
 import argparse
+from sys import exit
 from pathlib import Path
 from binascii import crc32
 from getpass import getpass
