@@ -90,9 +90,8 @@ def dmg_save_manifest(manifest: CDNDepotManifest, depot_key: bytes,
     depot_id = str(manifest.depot_id)
     manifest_gid = str(manifest.gid)
     if not save_path:
-        save_path = Path().absolute()
-    app_path = save_path / f'depots/{app_id}'
-    manifest_path = app_path / f'{depot_id}_{manifest_gid}.manifest'
+        save_path = Path().absolute() / f'depots/{app_id}'
+    manifest_path = save_path / f'{depot_id}_{manifest_gid}.manifest'
     if manifest_path.exists():
         return True, manifest_path, []
     log.info("app_id: %s | depot_id: %s | manifest_gid: %s | DecryptionKey: %s",
@@ -103,10 +102,10 @@ def dmg_save_manifest(manifest: CDNDepotManifest, depot_key: bytes,
         mapping.filename = mapping.filename.rstrip('\x00 \n\t')
         mapping.chunks.sort(key=lambda x: x.sha)
     manifest.payload.mappings.sort(key=lambda x: x.filename.upper())
-    if not os.path.exists(app_path):
-        os.makedirs(app_path)
-    if os.path.isfile(app_path / 'config.vdf'):
-        with open(app_path / 'config.vdf') as f:
+    if not os.path.exists(save_path):
+        os.makedirs(save_path)
+    if os.path.isfile(save_path / 'config.vdf'):
+        with open(save_path / 'config.vdf') as f:
             d = vdf.load(f)
     else:
         d = vdf.VDFDict({'depots': {}})
@@ -114,7 +113,7 @@ def dmg_save_manifest(manifest: CDNDepotManifest, depot_key: bytes,
     d = {'depots': dict(sorted(d['depots'].items()))}
     delete_list = []
     if remove_old:
-        for file in app_path.iterdir():
+        for file in save_path.iterdir():
             if file.suffix == '.manifest':
                 depot_id_, manifest_gid_ = file.stem.split('_')
                 if depot_id_ == str(depot_id) and manifest_gid_ != str(manifest_gid):
@@ -124,7 +123,7 @@ def dmg_save_manifest(manifest: CDNDepotManifest, depot_key: bytes,
     manifest.metadata.crc_clear = crc32(struct.pack('<I', len(buffer)) + buffer)
     with open(manifest_path, 'wb') as f:
         f.write(manifest.serialize(compress=False))
-    with open(app_path / 'config.vdf', 'w') as f:
+    with open(save_path / 'config.vdf', 'w') as f:
         vdf.dump(d, f, pretty=True)
     return True, manifest_path, delete_list
 
@@ -215,7 +214,7 @@ if not client.licenses:
     exit(1)
 
 cdn = CDNClient(client)
-args.save_path = Path(args.save_path) if args.save_path else args.save_path
+args.save_path = Path(args.save_path) if args.save_path else ''
 
 if args.workshop_id:
     workshop_id_list = {int(workshop_id) for workshop_id in args.workshop_id.split(',')}
@@ -264,9 +263,10 @@ for app_id in app_id_list:
     if not int(app_id) in {*cdn.licensed_depot_ids, *cdn.licensed_app_ids}:
         log.warning(f"account '{USERNAME}' not owned '{app_id}', ignored")
         continue
+    save_path = args.save_path / f'depots/{app_id}' if isinstance(args.save_path, Path) else ''
     for manifest in cdn.get_manifests(app_id, filter_func=dmg_filter_func):
         depot_key = cdn.get_depot_key(manifest.app_id, manifest.depot_id)
-        dmg_save_manifest(manifest, depot_key, args.remove_old, args.save_path)
+        dmg_save_manifest(manifest, depot_key, args.remove_old, save_path)
 
 client.logout()
 log.info('done!')
