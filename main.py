@@ -37,6 +37,9 @@ parser.add_argument(
     '-a', '--app-id', required=False,
     help='only download manifest owned by selected appids e.g. 480,730')
 parser.add_argument(
+    '-b', '--branch', required=False, default='public',
+    help='depot branch, needs app id specified')
+parser.add_argument(
     '-w', '--workshop-id', required=False,
     help='only download workshop item\'s manifest owned by selected workshop ids e.g. 3439745927,3440777586')
 parser.add_argument(
@@ -233,6 +236,9 @@ app_id_list = []
 if args.app_id:
     app_id_list = {int(app_id) for app_id in args.app_id.split(',')}
 else:
+    if args.branch:
+        log.info('specify app id when specified depot branch!')
+        exit(1)
     # only query paid appid
     paidtype_list = [
         EBillingType.BillOnceOnly,
@@ -264,7 +270,7 @@ for app_id in app_id_list:
         log.warning(f"account '{USERNAME}' not owned '{app_id}', ignored")
         continue
     save_path = args.save_path / f'depots/{app_id}' if isinstance(args.save_path, Path) else ''
-    for manifest in cdn.get_manifests(app_id, filter_func=dmg_filter_func):
+    for manifest in cdn.get_manifests(app_id, args.branch, filter_func=dmg_filter_func):
         depot_key = cdn.get_depot_key(manifest.app_id, manifest.depot_id)
         dmg_save_manifest(manifest, depot_key, args.remove_old, save_path)
 
